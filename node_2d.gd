@@ -1,104 +1,110 @@
 extends Node2D
 
-# Grid Configuration
 const GRID_WIDTH: int = 6
 const GRID_HEIGHT: int = 6
 const TILE_SIZE: int = 64
 const COLORS: Array[Color] = [Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW]
 
-# 2D Array holding color indices for each grid cell
+# 2D Array storing actual ColorRect Node references
 var grid: Array = []
-var visual_positions: Array = []
-
 var is_animating: bool = false
+var selected_cell: Vector2i = Vector2i(-1, -1)
+
+var selection_indicator: ReferenceRect = null
 
 func _ready() -> void:
 	randomize()
 	initialize_grid()
-	queue_redraw() # Triggers Godot's built-in drawing pipeline
 
 func initialize_grid() -> void:
+	for child in get_children():
+		child.queue_free()
+		
 	grid.clear()
-	visual_positions.clear()
 	
 	for x in range(GRID_WIDTH):
 		var column: Array = []
-		var pos_column: Array = []
 		for y in range(GRID_HEIGHT):
-			var valid_color: int = randi() % COLORS.size()
+			var color_idx: int = randi() % COLORS.size()
 			
-			while (x >= 2 and column_has_horizontal_match(x, y, valid_color)) or (y >= 2 and column_has_vertical_match(column, y, valid_color)):
-				valid_color = randi() % COLORS.size()
-			
-			column.append(valid_color)
-			pos_column.append(Vector2(x * TILE_SIZE, y * TILE_SIZE))
-			
+			# Avoid starting matches on initial spawn
+			while (x >= 2 and grid[x-1][y].get_meta("color_idx") == color_idx and grid[x-2][y].get_meta("color_idx") == color_idx) or \
+				  (y >= 2 and column[y-1].get_meta("color_idx") == color_idx and column[y-2].get_meta("color_idx") == color_idx):
+				color_idx = randi() % COLORS.size()
+
+			var tile = create_tile_node(x, y, color_idx)
+			column.append(tile)
 		grid.append(column)
-		visual_positions.append(pos_column)
 
-func column_has_horizontal_match(x: int, y: int, color_index: int) -> bool:
-	return grid[x - 1][y] == color_index and grid[x - 2][y] == color_index
+func create_tile_node(x: int, y: int, color_idx: int) -> ColorRect:
+	var tile = ColorRect.new()
+	tile.size = Vector2(TILE_SIZE - 2, TILE_SIZE - 2)
+	tile.color = COLORS[color_idx]
+	tile.position = Vector2(x * TILE_SIZE, y * TILE_SIZE)
+	
+	# CRITICAL FIX: Allow clicks to pass through the tile to the main script
+	tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	
+	# Metadata tag so we can evaluate colors without reading tile.color directly
+	tile.set_meta("color_idx", color_idx)
+	
+	add_child(tile)
+	return tile
 
-func column_has_vertical_match(column: Array, y: int, color_index: int) -> bool:
-	return column[y - 1] == color_index and column[y - 2] == color_index
-
-func _draw() -> void:
-	# Loop through the grid array and render a square for each cell
-	for x in range(GRID_WIDTH):
-		for y in range(GRID_HEIGHT):
-			var color_index: int = grid[x][y]
-			
-			if color_index == -1:
-				continue
-			
-			var cell_color = COLORS[color_index]
-			var draw_pos: Vector2 = visual_positions[x][y]
-			var rect = Rect2(draw_pos.x, draw_pos.y, TILE_SIZE - 2, TILE_SIZE - 2)
-			draw_rect(rect, cell_color)
-
-#	---------------------------------------------------------------------------------------------	#
-
-var selected_cell: Vector2i = Vector2i(-1, -1)
-
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if is_animating:
-		return # Block Clicks while animations are playing
+		return
 		
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		var grid_x: int = int(event.position.x / TILE_SIZE)
 		var grid_y: int = int(event.position.y / TILE_SIZE)
 		
-		# Ensure click is inside the grid boundaries
 		if grid_x >= 0 and grid_x < GRID_WIDTH and grid_y >= 0 and grid_y < GRID_HEIGHT:
 			handle_cell_click(Vector2i(grid_x, grid_y))
 
 func handle_cell_click(cell: Vector2i) -> void:
 	if selected_cell == Vector2i(-1, -1):
-		# First click: store the tile location
 		selected_cell = cell
-		print("Selected tile at: ", selected_cell)
+		show_selection_at(cell)
 	else:
-		# Second click: check if adjacent
+		hide_selection()
+		
 		if is_adjacent(selected_cell, cell):
 			is_animating = true
 			
-			swap_tiles(selected_cell, cell)
-			var matches = check_for_matches()
+			# 1. Visually slide nodes past each other
+			await animate_swap(selected_cell, cell)
 			
-			if matches.size() > 0:	
-				#process_board_state()
-				await animate_board_state()
-			else:
-				# Invalid move: revert the swap
-				print("Invalid move! Swapping back.")
+			# 2. Swap array references in memory
+			swap_tiles(selected_cell, cell)
+			
+			# 3. Validate matches
+			var matches = check_for_matches()
+			if matches.size() == 0:
+				# Invalid move: slide back smoothly
+				await animate_swap(selected_cell, cell)
 				swap_tiles(selected_cell, cell)
-				queue_redraw()
+			else:
+				# Run match clears
+				await process_board_state()
 				
 			is_animating = false
-			
 		
 		selected_cell = Vector2i(-1, -1)
-		queue_redraw()
+
+func animate_swap(cell_a: Vector2i, cell_b: Vector2i) -> void:
+	var tile_a: ColorRect = grid[cell_a.x][cell_a.y]
+	var tile_b: ColorRect = grid[cell_b.x][cell_b.y]
+	
+	var pos_a: Vector2 = Vector2(cell_a.x * TILE_SIZE, cell_a.y * TILE_SIZE)
+	var pos_b: Vector2 = Vector2(cell_b.x * TILE_SIZE, cell_b.y * TILE_SIZE)
+	
+	# Animate position properties over 0.4 seconds
+	var tween = create_tween().set_parallel(true)
+	tween.tween_property(tile_a, "position", pos_b, 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tween.tween_property(tile_b, "position", pos_a, 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	
+	await tween.finished
 
 func is_adjacent(a: Vector2i, b: Vector2i) -> bool:
 	return abs(a.x - b.x) + abs(a.y - b.y) == 1
@@ -108,150 +114,127 @@ func swap_tiles(a: Vector2i, b: Vector2i) -> void:
 	grid[a.x][a.y] = grid[b.x][b.y]
 	grid[b.x][b.y] = temp
 
-#	---------------------------------------------------------------------------------------------	#
-
-func animate_board_state() -> void:
-	var matches_found: bool = true
-	
-	while matches_found:
-		var matched_cells = check_for_matches()
-		
-		if matched_cells.size() > 0:
-			# Clear values in memory
-			for cell in matched_cells:
-				grid[cell.x][cell.y] = -1
-			
-			# Flash/redraw cleared tiles
-			queue_redraw()
-			await get_tree().create_timer(0.4).timeout
-			
-			# Drop existing pieces down & spawn new ones
-			apply_gravity()
-			refill_grid()
-			
-			# Smooth slide delay to simulate falling gravity
-			queue_redraw()
-			await animate_falling_tiles()
-		else:
-			matches_found = false
-
-func animate_falling_tiles() -> void:
-	# Create a tween to pause execution for a natural drop pace
-	var tween = create_tween()
-	tween.tween_property(self, "position", position, 0.4).set_trans(Tween.TRANS_BOUNCE).set_ease(Tween.EASE_OUT)
-	await tween.finished
-	
-func animate_swap(cell_a: Vector2i, cell_b: Vector2i, duration: float = 0.3) -> void:
-	var start_pos_a: Vector2 = visual_positions[cell_a.x][cell_a.y]
-	var start_pos_b: Vector2 = visual_positions[cell_b.x][cell_b.y]
-	
-	var tween = create_tween().set_parallel(true)
-	
-	# Animate Position A to Position B
-	tween.tween_property(self, "visual_positions:" + str(cell_a.x) + ":" + str(cell_a.y), start_pos_b, duration)
-	# Animate Position B to Position A
-	tween.tween_property(self, "visual_positions:" + str(cell_b.x) + ":" + str(cell_b.y), start_pos_a, duration)
-	
-	# Redraw on every frame while tweening
-	var step_tween = create_tween()
-	step_tween.set_loops(int(duration * 60))
-	step_tween.tween_callback(queue_redraw).set_delay(1.0 / 60.0)
-	
-	await tween.finished
-	
-	# Reset visual positions to snap back to alignment after grid values swap
-	visual_positions[cell_a.x][cell_a.y] = start_pos_a
-	visual_positions[cell_b.x][cell_b.y] = start_pos_b
-
-#	---------------------------------------------------------------------------------------------	# 
-
 func check_for_matches() -> Array[Vector2i]:
 	var matched_cells: Array[Vector2i] = []
 
-	# Horizontal match check
+	# Horizontal check
 	for y in range(GRID_HEIGHT):
 		for x in range(GRID_WIDTH - 2):
-			var val = grid[x][y]
-			if val == grid[x+1][y] and val == grid[x+2][y]: #and val != 4 and val != 5:
-				matched_cells.append(Vector2i(x, y))
-				matched_cells.append(Vector2i(x+1, y))
-				matched_cells.append(Vector2i(x+2, y))
+			if grid[x][y] != null and grid[x+1][y] != null and grid[x+2][y] != null:
+				var c1 = grid[x][y].get_meta("color_idx")
+				var c2 = grid[x+1][y].get_meta("color_idx")
+				var c3 = grid[x+2][y].get_meta("color_idx")
+				if c1 == c2 and c1 == c3:
+					matched_cells.append(Vector2i(x, y))
+					matched_cells.append(Vector2i(x+1, y))
+					matched_cells.append(Vector2i(x+2, y))
 
-	# Vertical match check
+	# Vertical check
 	for x in range(GRID_WIDTH):
 		for y in range(GRID_HEIGHT - 2):
-			var val = grid[x][y]
-			if val == grid[x][y+1] and val == grid[x][y+2]: #and val != 4 and val != 5:
-				matched_cells.append(Vector2i(x, y))
-				matched_cells.append(Vector2i(x, y+1))
-				matched_cells.append(Vector2i(x, y+2))
-				
+			if grid[x][y] != null and grid[x][y+1] != null and grid[x][y+2] != null:
+				var c1 = grid[x][y].get_meta("color_idx")
+				var c2 = grid[x][y+1].get_meta("color_idx")
+				var c3 = grid[x][y+2].get_meta("color_idx")
+				if c1 == c2 and c1 == c3:
+					matched_cells.append(Vector2i(x, y))
+					matched_cells.append(Vector2i(x, y+1))
+					matched_cells.append(Vector2i(x, y+2))
+
 	return matched_cells
 
-	#if matched_cells.size() > 0:
-		#print("MATCH FOUND AT: ", matched_cells)
-		## Clear matched tiles (set to visual black or -1 index logic)
-		#for cell in matched_cells:
-			#grid[cell.x][cell.y] = -1 # -1 is an empty / cleared cell
+func clear_matches(matches: Array[Vector2i]) -> void:
+	for cell in matches:
+		if grid[cell.x][cell.y] != null:
+			grid[cell.x][cell.y].color = Color.BLACK
 			
-		#gravity()
-		#check_for_matches()
-
-#func gravity() -> void:
-	#for y in range(GRID_HEIGHT-1):
-		#for x in range(GRID_WIDTH):
-			#if grid[x][y+1] == 4 or grid[x][y+1] == 5:
-				#print("Debugging: ", grid[x][y])
-				#grid[x][y+1] = grid[x][y]
-				#if y == 0:
-					#grid[x][y] = randi() % (COLORS.size()-2)
-				#else:
-					#grid[x][y] = 5
-				#
-	#for y in range(GRID_HEIGHT):
-		#for x in range(GRID_WIDTH):
-			#if grid[x][y] == 4 or grid[x][y] == 5:
-				#if y == 0:
-					#grid[x][y] = randi() % (COLORS.size()-2)
-				#else:
-					#gravity()
-
-func apply_gravity() -> void:
-	for x in range(GRID_WIDTH):
-		# Scan from the bottom row up to the top row
-		for y in range(GRID_HEIGHT - 1, -1, -1):
-			if grid[x][y] == -1:
-				# Look upward for the first available piece
-				for look_above in range(y - 1, -1, -1):
-					if grid[x][look_above] != -1:
-						# Move the piece down to the empty space
-						grid[x][y] = grid[x][look_above]
-						grid[x][look_above] = -1
-						break
-						
-func refill_grid() -> void:
-	for x in range(GRID_WIDTH):
-		for y in range(GRID_HEIGHT):
-			if grid[x][y] == -1:
-				grid[x][y] = randi() % COLORS.size()
-				
 func process_board_state() -> void:
-	var matches_found: bool = true
+	var matches = check_for_matches()
 	
-	while matches_found:
-		# Check if any matches exist on the board
-		var matched_cells = check_for_matches()
+	while matches.size() > 0:
+		# 1. Animate match removal (shrink scale to 0)
+		await animate_match_clear(matches)
 		
-		if matched_cells.size() > 0:
-			# Clear the matched cells to -1
-			for cell in matched_cells:
-				grid[cell.x][cell.y] = -1
+		# 2. Apply gravity & spawn replacement tiles
+		await apply_gravity_and_refill()
+		
+		# 3. Re-check for secondary cascading matches
+		matches = check_for_matches()
+
+func animate_match_clear(matches: Array[Vector2i]) -> void:
+	var tween = create_tween().set_parallel(true)
+	
+	for cell in matches:
+		var tile: ColorRect = grid[cell.x][cell.y]
+		if tile != null:
+			# Animate scale down to zero over 0.25 seconds
+			tween.tween_property(tile, "scale", Vector2.ZERO, 0.25)
+			# Pivot scaling around center of tile
+			tile.pivot_offset = tile.size / 2
 			
-			# Drop existing tiles down and generate new ones
-			apply_gravity()
-			refill_grid()
-		else:
-			matches_found = false
+	await tween.finished
+	
+	# Clean up node references and remove from scene tree
+	for cell in matches:
+		var tile: ColorRect = grid[cell.x][cell.y]
+		if tile != null:
+			tile.queue_free()
+			grid[cell.x][cell.y] = null
+
+func apply_gravity_and_refill() -> void:
+	var tween = create_tween().set_parallel(true)
+	
+	for x in range(GRID_WIDTH):
+		# 1. Drop existing tiles down into empty null slots
+		for y in range(GRID_HEIGHT - 1, -1, -1):
+			if grid[x][y] == null:
+				# Find the nearest non-null tile above
+				for above_y in range(y - 1, -1, -1):
+					if grid[x][above_y] != null:
+						grid[x][y] = grid[x][above_y]
+						grid[x][above_y] = null
+						
+						# Animate drop to new grid position
+						var target_pos = Vector2(x * TILE_SIZE, y * TILE_SIZE)
+						tween.tween_property(grid[x][y], "position", target_pos, 0.3)\
+							.set_trans(Tween.TRANS_BOUNCE)\
+							.set_ease(Tween.EASE_OUT)
+						break
+		
+		# 2. Fill remaining empty top slots with fresh tiles
+		for y in range(GRID_HEIGHT - 1, -1, -1):
+			if grid[x][y] == null:
+				var color_idx = randi() % COLORS.size()
+				var new_tile = create_tile_node(x, y, color_idx)
+				grid[x][y] = new_tile
+				
+				# Spawn slightly above top of screen and animate drop in
+				new_tile.position = Vector2(x * TILE_SIZE, -TILE_SIZE)
+				new_tile.scale = Vector2.ONE
+				var target_pos = Vector2(x * TILE_SIZE, y * TILE_SIZE)
+				
+				tween.tween_property(new_tile, "position", target_pos, 0.3)\
+					.set_trans(Tween.TRANS_BOUNCE)\
+					.set_ease(Tween.EASE_OUT)
+
+	await tween.finished
 			
-	# Trigger Godot to redraw the updated array visually
-	queue_redraw()
+
+func show_selection_at(cell: Vector2i) -> void:
+	# Clear any existing indicator first
+	hide_selection()
+	
+	var tile: ColorRect = grid[cell.x][cell.y]
+	if tile != null:
+		selection_indicator = ReferenceRect.new()
+		selection_indicator.size = tile.size
+		selection_indicator.border_color = Color.WHITE # Set outline color
+		selection_indicator.border_width = 3.0       # Set line thickness
+		selection_indicator.editor_only = false       # Ensures it renders in game builds
+		
+		tile.add_child(selection_indicator)
+
+func hide_selection() -> void:
+	if selection_indicator != null and is_instance_valid(selection_indicator):
+		selection_indicator.queue_free()
+		selection_indicator = null
