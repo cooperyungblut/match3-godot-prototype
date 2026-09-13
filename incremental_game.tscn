@@ -1,0 +1,39 @@
+[gd_scene format=3 uid="uid://bw442x6ruhy8u"]
+
+[ext_resource type="Script" uid="uid://b7x78ipwlf22g" path="res://incremental_game.gd" id="1_5t6mn"]
+[ext_resource type="Script" uid="uid://l4cunipn5vnh" path="res://game_state.gd" id="2_ox5v5"]
+
+[node name="IncrementalGame" type="Control" unique_id=1138326800]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_5t6mn")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="." unique_id=965996564]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="ScoreLabel" type="Label" parent="VBoxContainer" unique_id=2025477567]
+layout_mode = 2
+
+[node name="ClickButton" type="Button" parent="VBoxContainer" unique_id=1510228499]
+layout_mode = 2
+
+[node name="AutoClickerButton" type="Button" parent="VBoxContainer" unique_id=886377781]
+layout_mode = 2
+
+[node name="SolarPanelButton" type="Button" parent="VBoxContainer" unique_id=1333058569]
+layout_mode = 2
+
+[node name="SaveButton" type="Button" parent="VBoxContainer" unique_id=1937113526]
+layout_mode = 2
+
+[node name="LoadButton" type="Button" parent="VBoxContainer" unique_id=1826326424]
+layout_mode = 2
+
+[node name="GameState" type="Node" parent="." unique_id=1628652182]
+script = ExtResource("2_ox5v5")
